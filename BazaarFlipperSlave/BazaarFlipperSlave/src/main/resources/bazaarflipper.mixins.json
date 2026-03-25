@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "com.bazaarflipper.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "SignEditScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

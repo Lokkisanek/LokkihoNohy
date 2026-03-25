@@ -16,7 +16,7 @@
 	"environment": "*",
 	"entrypoints": {
   "client": [
-    "net.lokkisan.bazzarclient.ExampleMod"
+    "net.lokkisan.bazzarclient.BazaarClient" 
   ]
 },
 	"mixins": [

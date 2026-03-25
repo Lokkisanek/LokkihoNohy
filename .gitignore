@@ -1,0 +1,25 @@
+# Ignore Gradle and build caches
+**/.gradle/
+**/.gradle/**
+**/loom-cache/
+
+# Ignore build outputs
+/build/
+**/build/
+
+# Ignore archives and IDE files
+*.zip
+.idea/
+.vscode/
+*.iml
+
+# Java class files and jars from caches
+*.class
+*.jar
+
+# Ignore local gradle wrapper files
+/.gradle/
+
+# Ignore Eclipse/IntelliJ project files
+.classpath
+.project

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "bazaarflipper",
+  "version": "${version}",
+  "name": "BazaarFlipperSlave",
+  "description": "Client-side slave mod for Bazaar flipping.",
+  "authors": ["You"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.bazaarflipper.BazaarFlipperMod"
+    ]
+  },
+  "mixins": [
+    "bazaarflipper.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.1",
+    "java": ">=21"
+  }
+}

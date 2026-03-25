@@ -9,36 +9,34 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 
 public class BazaarClient {
-    // HttpClient pro odesílání dat do Pythonu
+    // OPRAVA: Vynucení HTTP/1.1 zabrání chybě "Unsupported upgrade request" v Pythonu
     private static final HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(2))
+            .version(HttpClient.Version.HTTP_1_1) 
+            .connectTimeout(Duration.ofMillis(500))
             .build();
 
-    public static int getDecisionFromAI(String itemId, double sellPrice, double buyPrice) {
+    public static int getDecisionFromAI(String itemId) {
         try {
-            // Sestavení dat pro AI (přesně tak, jak to server.py očekává)
-            JsonObject json = new JsonObject();
-            json.addProperty("item_id", itemId);
-            json.addProperty("sell_price", sellPrice);
-            json.addProperty("buy_price", buyPrice);
-            json.addProperty("balance", 1000000); // Tady by mohl být tvůj reálný budget
-            json.addProperty("has_item", 0);      // 0 = nemám, 1 = mám (pro jednoduchost)
+            // Sestavení čistého JSONu
+            String jsonPayload = "{\"item_id\": \"" + itemId + "\"}";
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("http://127.0.0.1:5000/predict"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
+                    .uri(URI.create("http://127.0.0.1:8000/predict"))
+                    .header("Content-Type", "application/json") // Zásadní pro FastAPI
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
                     .build();
 
-            // Pošleme dotaz a počkáme na odpověď
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
             
-            // Přečteme akci (0=Nic, 1=Koupit, 2=Prodat)
-            JsonObject resJson = JsonParser.parseString(response.body()).getAsJsonObject();
-            return resJson.get("action").getAsInt();
-            
-        } catch (Exception e) {
-            // Pokud Python server neběží, mod nebude nic dělat
+            // Pokud server vrátí chybu (např. 422), vypíšeme to do konzole Minecraftu
+            if (response.statusCode() != 200) {
+                System.out.println("[BazaarClient] Python vrátil chybu: " + response.statusCode());
+                return 0;
+            }
+
+            JsonObject res = JsonParser.parseString(response.body()).getAsJsonObject();
+            return res.get("action").getAsInt();
+        } catch (Exception e) { 
             return 0; 
         }
     }

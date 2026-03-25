@@ -1,0 +1,188 @@
+[
+    {
+        "timestamp": "2026-03-25 09:56:06.980779",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24345890374149,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:56:37.008183",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.243436411875585,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:57:07.029541",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24363578560517,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:57:37.046266",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.243636322964306,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:58:07.061626",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24353107654792,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:58:37.087110",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24347350334439,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:59:07.120886",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.243473503344376,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 09:59:37.144931",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.243473503344404,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:00:07.172535",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24347350334439,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:00:37.186650",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24347350334439,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:01:07.220491",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24362097569433,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:01:37.242582",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24325706138737,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:02:07.272837",
+        "item": "PLANT_MATTER",
+        "profit_pct": 33.24282232310128,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:02:37.298693",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.790301749948085,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:03:07.329141",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.750769065596771,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:03:37.345213",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.750769065596771,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:04:07.369203",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:04:37.402208",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:05:07.426248",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:05:37.452071",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:06:07.491040",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:06:37.512333",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:07:07.540396",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:07:37.567455",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:08:07.591300",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:08:37.610506",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:09:07.625387",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:09:37.649182",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.7507684309766205,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:10:07.686471",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.750768040441162,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:10:37.714535",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.750768040441162,
+        "status": "SUCCESS"
+    },
+    {
+        "timestamp": "2026-03-25 10:11:07.745907",
+        "item": "STOCK_OF_STONKS",
+        "profit_pct": 5.750768040441162,
+        "status": "SUCCESS"
+    }
+]

@@ -3,127 +3,159 @@ package net.lokkisan.bazzarclient;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
-import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.tooltip.TooltipType;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
-import net.minecraft.util.Identifier;
-import java.util.List;
+
+import java.util.Random;
+import java.util.concurrent.CompletableFuture;
 
 public class ExampleMod implements ClientModInitializer {
+    private boolean enabled = false;
+    private int cooldownTicks = 0;
+    private int lastSlot = -1;
+    private final Random random = new Random();
+    private boolean isAwaitingResponse = false; 
+
+    private String statusText = "STANDBY";
+    private long lastChatReaction = 0;
+    
     private static KeyBinding toggleBinding;
-    private boolean botEnabled = false;
-    private int actionCooldown = 0;
-    private int lastClickedSlot = -1;
+
+    // Pomocná funkce pro odesílání zpráv přímo do Minecraft chatu hráči (vidí to jen on)
+    private void debugChat(MinecraftClient client, String message) {
+        if (client.player != null) {
+            client.player.sendMessage(Text.of("§8[§6Overlord Debug§8] §7" + message), false);
+        }
+    }
 
     @Override
     public void onInitializeClient() {
-        // OPRAVENO: Používáme nejjednodušší konstruktor, který v 1.21.11 funguje nejlépe
+        // Zkratka "R" pro zapnutí bota
         toggleBinding = KeyBindingHelper.registerKeyBinding(new KeyBinding(
             "key.bazaarclient.toggle",
-            InputUtil.Type.KEYSYM, // Tohle tam MUSÍ být
             GLFW.GLFW_KEY_R,
-            KeyBinding.Category.MISC
+            "key.categories.misc" 
         ));
-        // Registrace příkazu /ai_setup
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            dispatcher.register(ClientCommandManager.literal("ai_setup")
-                .executes(context -> {
-                    context.getSource().sendFeedback(Text.of("§6[AI Bot] Setup dokončen."));
-                    return 1;
-                }));
+
+        // Zobrazení na obrazovce (HUD)
+        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
+            drawContext.drawTextWithShadow(MinecraftClient.getInstance().textRenderer, 
+                Text.of("§6[OVERLORD V10] §fStatus: " + statusText + " | Enabled: " + (enabled ? "§aYES" : "§cNO")), 
+                10, 10, 0xFFFFFF);
         });
 
-        // Hlavní smyčka (Tick)
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (client.player == null) return;
-
+            // 1. Zkontrolujeme, jestli hráč zmáčkl klávesu "R"
             while (toggleBinding.wasPressed()) {
-                botEnabled = !botEnabled;
-                String status = botEnabled ? "§aZAPNUT" : "§cVYPNUT";
-                client.player.sendMessage(Text.of("§6[AI Bot] " + status), true);
+                enabled = !enabled;
+                statusText = enabled ? "§aACTIVE" : "§cSTANDBY";
+                debugChat(client, "Bot byl " + (enabled ? "§aZAPNUT" : "§cVYPNUT"));
             }
 
-            if (!botEnabled || client.currentScreen == null) return;
+            if (client.player == null || !enabled) return;
 
-            // Failsafe: Pokud hráč dostane poškození, bot se vypne
-            if (client.player.hurtTime > 0) {
-                botEnabled = false;
-                client.player.sendMessage(Text.of("§c[FAILSAFE] Detekován hit! Bot zastaven."), false);
+            // 2. Chat Simulator
+            if (System.currentTimeMillis() < lastChatReaction) {
+                statusText = "§eREADING CHAT...";
                 return;
             }
 
-            if (client.currentScreen instanceof GenericContainerScreen screen) {
-                if (actionCooldown > 0) {
-                    actionCooldown--;
-                    return;
-                }
+            // 3. Jsme v menu?
+            if (client.currentScreen == null) {
+                isAwaitingResponse = false; 
+                return;
+            }
 
-                String title = screen.getTitle().getString();
-                
-                if (title.contains("Bazaar")) {
-                    handleBazaarMain(client, screen);
-                } else if (title.contains("Buy Order") || title.contains("Confirm")) {
-                    // Klik na potvrzení v podmenu
-                    executeStealthClick(client, screen, title.contains("Confirm") ? 13 : 31);
-                }
+            if (cooldownTicks > 0) { cooldownTicks--; return; }
+
+            // 4. Je otevřená truhla (GUI)?
+            if (client.currentScreen instanceof GenericContainerScreen screen) {
+                handleAdvancedLogic(client, screen);
             }
         });
     }
 
-    private void handleBazaarMain(MinecraftClient client, GenericContainerScreen screen) {
-        ItemStack item = screen.getScreenHandler().getSlot(13).getStack();
-        if (item.isEmpty() || item.getName().getString().equals("Air")) return;
+    private void handleAdvancedLogic(MinecraftClient client, GenericContainerScreen screen) {
+        if (isAwaitingResponse) return; 
 
-        // Přečtení Lore pro ceny
-        List<Text> tooltip = item.getTooltip(
-            net.minecraft.item.Item.TooltipContext.create(client.world), 
-            client.player, 
-            TooltipType.BASIC
-        );
+        // Získáme název okna (Odstraníme Hypixel barevné kódy, protože ty by to mohly blokovat)
+        String rawTitle = screen.getTitle().getString().replaceAll("§[0-9a-fk-or]", "").trim();
         
-        double buyPrice = 0;
-        double sellPrice = 0;
-        for (Text line : tooltip) {
-            String text = line.getString().toLowerCase().replace(",", "");
-            if (text.contains("buy price")) buyPrice = extractPrice(text);
-            if (text.contains("sell price")) sellPrice = extractPrice(text);
+        // Anti-Spam: Aby nám debug zprávy nespamovaly chat každou milisekundu,
+        // vypíšeme je jen občas, nebo když se změní stav.
+        if (client.world.getTime() % 40 == 0) { // Každé 2 vteřiny
+            debugChat(client, "Otevřeno GUI: '" + rawTitle + "'");
         }
 
-        if (buyPrice > 0 && sellPrice > 0) {
-            int action = BazaarClient.getDecisionFromAI(item.getName().getString(), sellPrice, buyPrice);
-            if (action == 1) { 
-                executeStealthClick(client, screen, 13);
+        // Zkontrolujeme Slot 13 (prostřední řada, 2. slot)
+        ItemStack slotItem = screen.getScreenHandler().getSlot(13).getStack();
+        String itemName = slotItem.getName().getString().replaceAll("§[0-9a-fk-or]", "").trim();
+
+        if (client.world.getTime() % 40 == 0) {
+            debugChat(client, "Vidím Slot 13: '" + itemName + "'");
+        }
+
+        if (slotItem.isEmpty() || itemName.equalsIgnoreCase("Air")) {
+            statusText = "§7LAG BUFFER...";
+            return;
+        }
+
+        // Kontrola, jestli je to opravdu Bazaar (Ignorujeme velikost písmen)
+        if (rawTitle.toLowerCase().contains("bazaar")) {
+            statusText = "§aDECIDING...";
+            isAwaitingResponse = true;
+
+            // Převedeme jméno na formát pro Python (např. "Iron Ingot" -> "IRON_INGOT")
+            String idForPython = itemName.toUpperCase().replace(" ", "_");
+            debugChat(client, "§bOdesílám do Pythonu: " + idForPython);
+
+            // Asynchronní dotaz na Python (Zabraňuje seknutí hry)
+            CompletableFuture.supplyAsync(() -> BazaarClient.getDecisionFromAI(idForPython))
+                .thenAccept(action -> {
+                    client.execute(() -> { 
+                        isAwaitingResponse = false;
+                        if (action == 1 && client.currentScreen == screen) { 
+                            debugChat(client, "§aPython odpověděl: KLIKNI (KUP/PRODEJ)!");
+                            executeHumanClick(client, screen, 13);
+                        } else {
+                            if (client.world.getTime() % 40 == 0) {
+                                debugChat(client, "§ePython odpověděl: ČEKEJ.");
+                            }
+                            statusText = "§7WAITING...";
+                        }
+                    });
+                });
+
+        } else if (rawTitle.toLowerCase().contains("confirm")) {
+            debugChat(client, "§6Jsem v Potvrzovacím (Confirm) menu - provádím auto-klik!");
+            executeHumanClick(client, screen, 13);
+        } else {
+            if (client.world.getTime() % 40 == 0) {
+                debugChat(client, "§cIgnoruji toto menu (Není to Bazaar ani Confirm).");
             }
         }
     }
 
-    private void executeStealthClick(MinecraftClient client, GenericContainerScreen screen, int slot) {
-        // Výpočet prodlevy pro stealth pohyb
-        long delayMs = MouseHelper.getWaitTime(lastClickedSlot, slot);
-        actionCooldown = (int) (delayMs / 50) + 1;
+    private void executeHumanClick(MinecraftClient client, GenericContainerScreen screen, int slot) {
+        long delay = StealthMouse.calculateHumanDelay(lastSlot, slot);
+        cooldownTicks = (int) (delay / 50) + 1; 
 
-        if (client.interactionManager != null) {
-            client.interactionManager.clickSlot(
-                screen.getScreenHandler().syncId, slot, 0, SlotActionType.PICKUP, client.player
-            );
+        // Šance na miss-click (simulace člověka - 1%)
+        if (random.nextFloat() < 0.01) {
+            debugChat(client, "§c(Oops, miss-click simulace)");
+            client.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot + 1, 0, SlotActionType.PICKUP, client.player);
+            cooldownTicks += 10; 
         }
-        lastClickedSlot = slot;
-    }
 
-    private double extractPrice(String text) {
-        try {
-            String clean = text.replaceAll("[^0-9.]", "");
-            return clean.isEmpty() ? 0 : Double.parseDouble(clean);
-        } catch (Exception e) {
-            return 0;
-        }
+        // Správný klik
+        client.interactionManager.clickSlot(screen.getScreenHandler().syncId, slot, 0, SlotActionType.PICKUP, client.player);
+        lastSlot = slot;
+        statusText = "§bMOVING MOUSE...";
     }
 }

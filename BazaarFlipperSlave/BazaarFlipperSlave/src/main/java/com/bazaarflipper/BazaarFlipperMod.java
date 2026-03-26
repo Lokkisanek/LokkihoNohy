@@ -1,76 +1,103 @@
 package com.bazaarflipper;
 
+import com.bazaarflipper.config.FlipperConfig;
+import com.bazaarflipper.flip.FlipEngine;
+import com.bazaarflipper.gui.FlipperScreen;
+import com.bazaarflipper.market.BazaarApi;
+import com.bazaarflipper.safety.SafetyManager;
+import com.bazaarflipper.util.FlipLog;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.util.InputUtil;
+import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * BazaarFlipperSlave — Client-side Fabric mod.
- *
- * Architecture summary:
- *   - {@link TaskManager}  polls GET /api/task every ~1-2 s and POSTs status.
- *   - {@link ScreenTracker} tracks which Bazaar GUI is currently open.
- *   - {@link TaskExecutor}  is a tick-driven state machine that clicks through
- *     the Bazaar menus to fulfil the active task.
- *
- * All heavy I/O happens on a daemon ScheduledExecutorService thread.
- * All Minecraft interaction happens exclusively on the client game thread
- * inside ClientTickEvents.END_CLIENT_TICK.
- */
 public class BazaarFlipperMod implements ClientModInitializer {
 
     public static final String MOD_ID = "bazaarflipper";
     public static final Logger LOGGER = LoggerFactory.getLogger("BazaarFlipper");
 
-    // Singletons — accessible to mixins and helper classes
-    private static TaskManager  taskManager;
-    private static ScreenTracker screenTracker;
-    private static TaskExecutor  taskExecutor;
+    private static FlipperConfig config;
+    private static BazaarApi api;
+    private static FlipLog log;
+    private static SafetyManager safety;
+    private static FlipEngine engine;
+
+    private static KeyBinding openGuiKey;
+    private static KeyBinding toggleKey;
 
     @Override
     public void onInitializeClient() {
-        LOGGER.info("[BazaarFlipper] Initialising BazaarFlipperSlave mod...");
+        LOGGER.info("[BazaarFlipper] Initializing...");
 
-        screenTracker = new ScreenTracker();
-        taskManager   = new TaskManager();
-        taskExecutor  = new TaskExecutor(screenTracker);
+        // Load config
+        config = FlipperConfig.load();
 
-        // Register screen-open / screen-close hooks
-        screenTracker.register();
+        // Init components
+        log = new FlipLog();
+        api = new BazaarApi();
+        api.setApiKey(config.apiKey);
+        safety = new SafetyManager(config, log);
+        engine = new FlipEngine(config, api, safety, log);
 
-        // Start polling the Python master server
-        taskManager.startPolling();
+        // Start API fetcher
+        api.start();
 
-        // Main game-thread loop
+        // Register keybinds
+        openGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.bazaarflipper.open_gui",
+                InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_B,
+                KeyBinding.Category.MISC
+        ));
+        toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.bazaarflipper.toggle",
+                InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F6,
+                KeyBinding.Category.MISC
+        ));
+
+        // Client tick
         ClientTickEvents.END_CLIENT_TICK.register(BazaarFlipperMod::onClientTick);
 
-        LOGGER.info("[BazaarFlipper] Ready. Polling http://localhost:8000/api/task");
-    }
+        // Chat message listener for safety
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            if (!overlay) {
+                safety.onChatMessage(message.getString());
+            }
+        });
 
-    // -----------------------------------------------------------------------
-    //  Tick handler — runs on the client thread every tick (~20×/s)
-    // -----------------------------------------------------------------------
+        LOGGER.info("[BazaarFlipper] Ready. Press B to open GUI, F6 to toggle.");
+    }
 
     private static void onClientTick(MinecraftClient client) {
         if (client.player == null || client.world == null) return;
 
-        // Keep screen tracker aware of null screens (screen closed)
-        screenTracker.onTick(client.currentScreen);
-
-        // Drive the task executor
-        com.bazaarflipper.model.Task task = taskManager.getCurrentTask();
-        if (task != null && !task.isIdle()) {
-            taskExecutor.tick(client, task);
+        // Handle keybinds
+        while (openGuiKey.wasPressed()) {
+            client.setScreen(new FlipperScreen(config, engine, api, log));
         }
+        while (toggleKey.wasPressed()) {
+            if (engine.isRunning()) {
+                engine.stop(client);
+                log.log("§cBot stopped via keybind.");
+            } else {
+                engine.start();
+                log.log("§aBot started via keybind.");
+            }
+        }
+
+        // Drive flip engine
+        engine.tick(client);
     }
 
-    // -----------------------------------------------------------------------
-    //  Static accessors (used by mixin & other classes)
-    // -----------------------------------------------------------------------
-
-    public static TaskManager   getTaskManager()   { return taskManager;   }
-    public static ScreenTracker getScreenTracker() { return screenTracker; }
-    public static TaskExecutor  getTaskExecutor()  { return taskExecutor;  }
+    // Static accessors
+    public static FlipEngine getEngine() { return engine; }
+    public static FlipperConfig getConfig() { return config; }
+    public static BazaarApi getApi() { return api; }
+    public static FlipLog getLog() { return log; }
+    public static SafetyManager getSafety() { return safety; }
 }

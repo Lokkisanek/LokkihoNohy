@@ -1,36 +1,8 @@
 {
   "cash": 4096659.024593818,
   "total_profit": 0,
-  "active_orders": {
-    "FLAWED_JADE_GEM": {
-      "type": "BUY",
-      "current": 60,
-      "target": 4954,
-      "status": "TOP #1",
-      "price": 322.93452349912,
-      "buy_price": 322.93452349912,
-      "vel": 43315.22619047619
-    },
-    "ESSENCE_CRIMSON": {
-      "type": "BUY",
-      "current": 951,
-      "target": 1214,
-      "status": "TOP #1",
-      "price": 1054.3029207150614,
-      "buy_price": 1054.3029207150614,
-      "vel": 685129.0803571428
-    },
-    "ENCHANTED_MELON": {
-      "type": "BUY",
-      "current": 0,
-      "target": 3331,
-      "status": "TOP #1",
-      "price": 307.361897868942,
-      "buy_price": 307.361897868942,
-      "vel": 838137.5505952381
-    }
-  },
+  "active_orders": {},
   "mode": "BALANCED",
   "focus_item": "",
-  "is_running": false
+  "is_running": true
 }

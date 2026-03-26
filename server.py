@@ -1,4 +1,4 @@
-import requests, time, threading, os, uvicorn, random, json
+import requests, time, threading, os, uvicorn, json
 import numpy as np
 import torch
 from fastapi import FastAPI, Form, Request
@@ -12,14 +12,23 @@ import logging
 # --- KONFIGURACE ---
 BAZAAR_API  = "https://api.hypixel.net/v2/skyblock/bazaar"
 MODEL_PATH  = "bazaar_scalper_brain_v3.zip"
-STATE_FILE  = "bot_state.json"          # FIX 1.3 — persistence
-TAX         = 0.0125
+STATE_FILE  = "bot_state.json"
+TAX         = 0.01252  # Hypixel bazaar tax
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+MAX_CONCURRENT_FLIPS = 3      # max simultaneous flips (Hypixel limit is ~5)
+CLAIM_INTERVAL_S     = 120    # claim orders every 2 minutes
+FLIP_TIMEOUT_S       = 1800   # 30 min timeout for stuck flips
+MAX_BUDGET_FRACTION  = 0.20   # max fraction of cash to spend per flip
+MIN_CASH_RESERVE     = 5000   # don't flip if cash below this
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+DEBUG = True  # Set to False to suppress verbose debug logs
 
 app    = FastAPI()
 logger = logging.getLogger("BazaarOverlord")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(level=logging.DEBUG if True else logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ==============================================================================
 #  HELPER — definováno PŘED BotState (FIX 1.1 — odstraněna duplicita)
@@ -31,13 +40,16 @@ def _idle_task() -> dict:
 
 def _build_task_for_item(bot_ref, best: dict, action: str = "BUY") -> dict:
     price = best["buy_p"] if action == "BUY" else best["sell_p"]
-    qty   = max(1, int((bot_ref.cash * 0.18) / max(price, 0.01)))
+    cash  = bot_ref.mc_coins if bot_ref.mc_coins > 0 else bot_ref.cash
+    qty   = max(1, int((cash * MAX_BUDGET_FRACTION) / max(price, 0.01)))
+    qty   = min(qty, 71680)  # Hypixel max per order
     return {
-        "action":     action,
-        "item_id":    best["id"],
-        "amount":     qty,
-        "price":      round(price, 1),
-        "sell_price": round(best["sell_p"], 1),
+        "action":      action,
+        "item_id":     best["id"],
+        "amount":      qty,
+        "price":       round(price, 1),
+        "sell_price":  round(best["sell_p"], 1),
+        "search_term": best["id"].replace("_", " ").title(),
         "slot_target": -1,
     }
 
@@ -69,9 +81,18 @@ def load_state(bot):
             data = json.load(f)
         bot.cash          = data.get("cash",          10_000_000)
         bot.total_profit  = data.get("total_profit",  0)
-        bot.active_orders = data.get("active_orders", {})
         bot.mode          = data.get("mode",          "BALANCED")
         bot.focus_item    = data.get("focus_item",    "")
+        # Migrate old order format to new flip format
+        raw_orders = data.get("active_orders", {})
+        migrated = {}
+        for iid, o in raw_orders.items():
+            if "state" in o:
+                migrated[iid] = o  # already new format
+            else:
+                # Old format had "type", "current", "target", "status" — skip stale orders
+                logger.info(f"Discarding old-format order for {iid}")
+        bot.active_orders = migrated
         # is_running intentionally NOT restored — always start paused
         logger.info(f"State loaded from {STATE_FILE}: cash={bot.cash:,.0f}, orders={len(bot.active_orders)}")
     except Exception as e:
@@ -90,14 +111,19 @@ class BotState:
         self.cash         = 10_000_000.0
         self.initial_cash = 10_000_000.0
         self.total_profit = 0
-        self.active_orders: dict = {}
         self.market_cache: list  = []
+
+        # Active flips — proper lifecycle tracking
+        # Each entry: { "state": "buy_placed"|"ready_to_sell"|"sell_placed",
+        #               "buy_price", "sell_price", "amount", "placed_at" }
+        self.active_orders: dict = {}
 
         # Stav z Java módu
         self.mc_gui:       str        = "none"
         self.mc_coins:     float      = 0.0
         self.mc_inventory: List[str]  = []
         self.last_status_ts: float    = 0.0
+        self._prev_mc_coins: float    = 0.0   # for sell-completion detection
 
         # Task systém
         self._task_queue:   list = []
@@ -121,14 +147,18 @@ class BotState:
 
     def push_task(self, task: dict):
         with self._task_lock:
+            # Don't duplicate tasks for same item+action
+            for existing in self._task_queue:
+                if existing["action"] == task["action"] and existing.get("item_id") == task.get("item_id"):
+                    return
             self._task_queue.append(task)
-        self.log(f"📋 Queued: {task['action']} {task.get('item_id','')} ×{task.get('amount',0)}")
+        self.log(f"📋 Queued: {task['action']} {task.get('item_id','')} x{task.get('amount',0)}")
 
     def consume_task(self):
         with self._task_lock:
             if self._current_task["action"] == "IDLE" and self._task_queue:
                 self._current_task = self._task_queue.pop(0)
-                self.log(f"▶️  → Mod: {self._current_task['action']} {self._current_task.get('item_id','')}")
+                self.log(f"▶️  Sending to mod: {self._current_task['action']} {self._current_task.get('item_id','')}")
             return self._current_task
 
     def mark_task_done(self):
@@ -136,17 +166,29 @@ class BotState:
             done = self._current_task
             self.log(f"✅ Done: {done['action']} {done.get('item_id','')}")
             self._current_task = _idle_task()
-            # Auto-queue SELL after BUY
-            if done["action"] == "BUY" and done.get("item_id"):
-                sell_task = {
-                    "action":      "SELL",
-                    "item_id":     done["item_id"],
-                    "amount":      done["amount"],
-                    "price":       done.get("sell_price", round(done["price"] * 1.02, 1)),
-                    "slot_target": -1,
+
+            item_id = done.get("item_id", "")
+
+            if done["action"] == "BUY" and item_id:
+                # Buy order placed in-game — wait for fill, DO NOT auto-sell
+                self.active_orders[item_id] = {
+                    "state":      "buy_placed",
+                    "buy_price":  done.get("price", 0),
+                    "sell_price": done.get("sell_price", 0),
+                    "amount":     done.get("amount", 0),
+                    "placed_at":  time.time(),
                 }
-                self._task_queue.insert(0, sell_task)
-                self.log(f"🔁 Auto-SELL queued: {sell_task['item_id']} @ {sell_task['price']}")
+                self.log(f"📊 {item_id} — buy order placed, waiting for fill")
+
+            elif done["action"] == "SELL" and item_id:
+                if item_id in self.active_orders:
+                    self.active_orders[item_id]["state"] = "sell_placed"
+                    self.active_orders[item_id]["placed_at"] = time.time()
+                    self.log(f"📊 {item_id} — sell offer placed, waiting for fill")
+
+            elif done["action"] == "CLAIM_ORDERS":
+                self.log("📦 Claim completed — checking for state transitions")
+
         save_state(self)
 
     def mark_task_failed(self, reason: str = ""):
@@ -176,9 +218,8 @@ async def predict_action(req: ItemRequest):
         return {"action": 0}
     item_id = req.item_id.upper()
     if item_id in bot.active_orders:
-        if bot.active_orders[item_id]["status"] != "TOP #1":
-            return {"action": 1}
-    if len(bot.active_orders) < 5:
+        return {"action": 1}
+    if len(bot.active_orders) < MAX_CONCURRENT_FLIPS:
         for best in bot.market_cache:
             if best["id"] == item_id:
                 return {"action": 1}
@@ -192,9 +233,14 @@ async def predict_action(req: ItemRequest):
 @app.get("/api/task")
 async def get_task():
     if not bot.is_running:
+        if DEBUG:
+            logger.debug("[TASK] Bot not running → IDLE")
         return _idle_task()
     task = bot.consume_task()
-    return {k: v for k, v in task.items() if k != "sell_price"}
+    if DEBUG:
+        logger.debug(f"[TASK] Serving task: {task['action']} {task.get('item_id','')} (queue left: {len(bot._task_queue)})")
+    # Send everything except internal sell_price tracking
+    return {k: v for k, v in task.items() if k not in ("sell_price",)}
 
 
 # FIX 1.1 — odstraněn raw Request hack, čistý Pydantic model funguje správně
@@ -208,16 +254,38 @@ class StatusPayload(BaseModel):
 
 @app.post("/api/status")
 async def post_status(payload: StatusPayload):
+    if DEBUG:
+        logger.debug(f"[STATUS] gui={payload.current_gui} coins={payload.player_coins:.0f} inv={payload.inventory_items[:5]}")
     bot.mc_gui       = payload.current_gui
     bot.mc_coins     = payload.player_coins
     bot.mc_inventory = payload.inventory_items
     bot.last_status_ts = time.time()
 
-    # FIX 2.1: pouze Bazaar GUI varianty spouští enqueue, ne "none" / "other"
-    bazaar_guis = {"bazaar_main", "bazaar_item_list", "bazaar_orders"}
-    if bot.is_running and bot.mc_gui.lower() in bazaar_guis:
-        _maybe_enqueue_from_status()
+    # Sync cash from real game coins
+    if bot.mc_coins > 0:
+        bot.cash = bot.mc_coins
 
+    if bot.is_running:
+        # Detect flip state transitions
+        _check_flip_transitions(payload)
+
+        # Only enqueue tasks when in a Bazaar GUI
+        bazaar_guis = {"bazaar_main", "bazaar_item_list", "bazaar_orders",
+                       "bazaar_product_info", "bazaar_amount", "bazaar_price",
+                       "bazaar_confirm"}
+        gui_lower = bot.mc_gui.lower()
+        if gui_lower in bazaar_guis:
+            if DEBUG:
+                logger.debug(f"[STATUS] In Bazaar GUI '{gui_lower}' → calling _maybe_enqueue")
+            _maybe_enqueue_from_status()
+        else:
+            if DEBUG:
+                logger.debug(f"[STATUS] GUI '{gui_lower}' NOT in bazaar set → skipping enqueue")
+    else:
+        if DEBUG:
+            logger.debug("[STATUS] Bot not running → skip")
+
+    bot._prev_mc_coins = payload.player_coins
     return {"ok": True}
 
 
@@ -271,43 +339,117 @@ async def api_state():
 
 
 # ==============================================================================
-#  SMART TASK ENQUEUE
+#  FLIP STATE TRANSITIONS
+# ==============================================================================
+
+def _check_flip_transitions(payload):
+    """Detect flip state changes based on inventory / coin changes."""
+    now = time.time()
+    changed = False
+
+    for item_id, flip in list(bot.active_orders.items()):
+        state = flip["state"]
+        age   = now - flip.get("placed_at", 0)
+
+        # BUY_PLACED → READY_TO_SELL: item appeared in inventory (buy order filled + claimed)
+        if state == "buy_placed" and item_id in payload.inventory_items:
+            flip["state"] = "ready_to_sell"
+            bot.log(f"📦 {item_id} — buy order filled! Ready to sell")
+            changed = True
+
+        # SELL_PLACED completion: detect coin increase
+        elif state == "sell_placed":
+            coin_delta = payload.player_coins - bot._prev_mc_coins
+            expected   = flip["sell_price"] * flip["amount"] * (1 - TAX)
+            if coin_delta > 100 and bot._prev_mc_coins > 0 and coin_delta >= expected * 0.3:
+                profit = expected - (flip["buy_price"] * flip["amount"])
+                bot.total_profit += profit
+                bot.log(f"💰 Flip complete: {item_id} +{profit:,.0f} coins")
+                del bot.active_orders[item_id]
+                changed = True
+                continue
+
+            # Timeout: assume filled after FLIP_TIMEOUT_S
+            if age > FLIP_TIMEOUT_S:
+                profit = expected - (flip["buy_price"] * flip["amount"])
+                bot.total_profit += max(0, profit)
+                bot.log(f"⏰ {item_id} sell timeout — estimated profit: {profit:,.0f}")
+                del bot.active_orders[item_id]
+                changed = True
+
+        # Stale buy order timeout
+        elif state == "buy_placed" and age > FLIP_TIMEOUT_S:
+            bot.log(f"⏰ {item_id} — buy order timed out, cancelling")
+            bot.push_task({"action": "CANCEL_ORDER", "item_id": item_id, "amount": 0, "price": 0.0, "slot_target": -1})
+            del bot.active_orders[item_id]
+            changed = True
+
+    if changed:
+        save_state(bot)
+
+
+# ==============================================================================
+#  SMART TASK ENQUEUE — sole point of task dispatch
 # ==============================================================================
 
 def _maybe_enqueue_from_status():
+    """Only enqueue a new task if queue is empty and we're idle."""
     with bot._task_lock:
         queue_len    = len(bot._task_queue)
         current_idle = bot._current_task["action"] == "IDLE"
     if queue_len > 0 or not current_idle:
+        if DEBUG:
+            logger.debug(f"[ENQUEUE] Skip: queue={queue_len}, current_idle={current_idle}")
         return
 
-    # SELL pokud máme v inventáři věci k prodeji
-    for item_id in bot.mc_inventory:
-        if item_id in bot.active_orders:
-            order = bot.active_orders[item_id]
-            if order["type"] == "SELL" and order.get("status") != "QUEUED":
-                order["status"] = "QUEUED"
-                bot.push_task({
-                    "action":      "SELL",
-                    "item_id":     item_id,
-                    "amount":      order["target"],
-                    "price":       round(order["price"], 1),
-                    "slot_target": -1,
-                })
-                return
+    # Priority 1: SELL items that are ready_to_sell
+    for item_id, flip in bot.active_orders.items():
+        if flip["state"] == "ready_to_sell":
+            if DEBUG:
+                logger.debug(f"[ENQUEUE] P1: SELL {item_id}")
+            bot.push_task({
+                "action":      "SELL",
+                "item_id":     item_id,
+                "amount":      flip["amount"],
+                "price":       round(flip["sell_price"], 1),
+                "search_term": item_id.replace("_", " ").title(),
+                "slot_target": -1,
+            })
+            return
 
-    # BUY pokud jsou volné sloty
-    if len(bot.active_orders) < 5 and bot.market_cache and bot.cash > 1000:
-        for best in bot.market_cache:
-            if best["id"] not in bot.active_orders:
-                bot.push_task(_build_task_for_item(bot, best, "BUY"))
-                return
-
-    # CLAIM každých 5 minut
+    # Priority 2: CLAIM periodically when we have placed orders
     now = time.time()
-    if now - bot._last_claim_ts > 300 and bot.active_orders:
+    has_placed = any(
+        f["state"] in ("buy_placed", "sell_placed")
+        for f in bot.active_orders.values()
+    )
+    if has_placed and now - bot._last_claim_ts > CLAIM_INTERVAL_S:
+        if DEBUG:
+            logger.debug(f"[ENQUEUE] P2: CLAIM (last={now - bot._last_claim_ts:.0f}s ago)")
         bot._last_claim_ts = now
         bot.push_task({"action": "CLAIM_ORDERS", "item_id": "", "amount": 0, "price": 0.0, "slot_target": -1})
+        return
+
+    # Priority 3: BUY new items if capacity and cash available
+    active_count = len(bot.active_orders)
+    cash = bot.mc_coins if bot.mc_coins > 0 else bot.cash
+    if DEBUG:
+        logger.debug(f"[ENQUEUE] P3 check: active={active_count}/{MAX_CONCURRENT_FLIPS}, cash={cash:.0f}, market_cache={len(bot.market_cache)}")
+    if active_count < MAX_CONCURRENT_FLIPS and bot.market_cache and cash > MIN_CASH_RESERVE:
+        for best in bot.market_cache:
+            if best["id"] not in bot.active_orders:
+                task = _build_task_for_item(bot, best, "BUY")
+                if task["amount"] > 0:
+                    if DEBUG:
+                        logger.debug(f"[ENQUEUE] P3: BUY {best['id']} x{task['amount']} @ {task['price']} (score={best['score']})")
+                    bot.push_task(task)
+                    return
+    elif DEBUG:
+        reasons = []
+        if active_count >= MAX_CONCURRENT_FLIPS: reasons.append(f"full ({active_count}/{MAX_CONCURRENT_FLIPS})")
+        if not bot.market_cache: reasons.append("no market data")
+        if cash <= MIN_CASH_RESERVE: reasons.append(f"low cash ({cash:.0f})")
+        logger.debug(f"[ENQUEUE] P3 skip: {', '.join(reasons)}")
 
 
 # ==============================================================================
@@ -363,61 +505,15 @@ def update_loop():
                         "profit_h": int(margin_real * velocity),
                         "trust":    round(trust, 2),
                         "score":    int(score),
-                        "buy_p":    sell_p + 0.1,
-                        "sell_p":   buy_p  - 0.1,
+                        "buy_p":    sell_p + 0.1,   # our buy order: slightly above top buy order
+                        "sell_p":   buy_p  - 0.1,   # our sell offer: slightly below top sell offer
                         "vel":      velocity,
                     })
 
             bot.market_cache = sorted(temp_results, key=lambda x: x["score"], reverse=True)[:15]
 
-            if bot.is_running:
-                changed = False
-                for iid, o in list(bot.active_orders.items()):
-                    if random.random() < min(0.1, o.get("vel", 0) / 10000):
-                        o["status"] = "OUTBIDDED"
-                    else:
-                        o["status"]  = "TOP #1"
-                        fill_rate    = (o.get("vel", 100) * 0.5) / 360
-                        o["current"] += max(1, int(fill_rate))
-
-                    if o["current"] >= o["target"]:
-                        if o["type"] == "BUY":
-                            o["type"]    = "SELL"
-                            o["current"] = 0
-                            changed      = True
-                        else:
-                            profit     = (o["price"] * o["target"] * (1 - TAX)) - (o["buy_price"] * o["target"])
-                            bot.cash  += (o["price"] * o["target"] * (1 - TAX))
-                            bot.total_profit += profit
-                            bot.log(f"💰 Closed {iid}: +{profit:,.0f} coins")
-                            del bot.active_orders[iid]
-                            changed = True
-
-                if len(bot.active_orders) < 5 and bot.market_cache:
-                    for best in bot.market_cache:
-                        if best["id"] not in bot.active_orders:
-                            qty = int((bot.cash * 0.2) / best["buy_p"])
-                            if qty > 0:
-                                bot.cash -= qty * best["buy_p"]
-                                bot.active_orders[best["id"]] = {
-                                    "type":      "BUY",
-                                    "current":   0,
-                                    "target":    qty,
-                                    "status":    "TOP #1",
-                                    "price":     best["buy_p"],
-                                    "buy_price": best["buy_p"],
-                                    "vel":       best["vel"],
-                                }
-                                changed = True
-                                if bot.mc_gui in ("bazaar_main", "bazaar_item_list"):
-                                    task = _build_task_for_item(bot, best, "BUY")
-                                    with bot._task_lock:
-                                        if not bot._task_queue and bot._current_task["action"] == "IDLE":
-                                            bot._task_queue.append(task)
-                                break
-
-                if changed:
-                    save_state(bot)   # FIX 1.3 — uložit po každé změně
+            # NO SIMULATION — market data only.
+            # Task dispatch happens exclusively via _maybe_enqueue_from_status()
 
         except Exception as e:
             logger.error(f"Update loop error: {e}")
@@ -432,23 +528,27 @@ def update_loop():
 @app.get("/dashboard", response_class=HTMLResponse)
 async def get_dashboard():
     order_cards = ""
+    state_labels = {
+        "buy_placed":    ("BUY ORDER",   "#3b82f6", "Waiting for fill…"),
+        "ready_to_sell": ("READY",       "#f59e0b", "Items claimed — sell next"),
+        "sell_placed":   ("SELL OFFER",  "#10b981", "Waiting for fill…"),
+    }
     for iid, o in bot.active_orders.items():
-        progress   = (o["current"] / max(o["target"], 1)) * 100
-        status_clr = "#10b981" if o["status"] == "TOP #1" else "#f43f5e"
-        type_clr   = "#3b82f6" if o["type"]   == "BUY"   else "#f59e0b"
+        state = o.get("state", "buy_placed")
+        label, color, status_text = state_labels.get(state, ("???", "#94a3b8", state))
+        age_min = int((time.time() - o.get("placed_at", time.time())) / 60)
         order_cards += f"""
         <div class="order-card">
             <div class="order-header">
                 <span class="order-id">{iid}</span>
-                <span class="order-type" style="background:{type_clr}33;color:{type_clr}">{o['type']}</span>
+                <span class="order-type" style="background:{color}33;color:{color}">{label}</span>
             </div>
             <div class="order-status">
-                <span class="dot" style="background:{status_clr}"></span> {o['status']}
+                <span class="dot" style="background:{color}"></span> {status_text}
             </div>
-            <div class="progress-container"><div class="progress-bar" style="width:{progress:.1f}%"></div></div>
-            <div class="order-footer">
-                <span>{o['current']} / {o['target']} units</span>
-                <span>{int(progress)}%</span>
+            <div class="order-footer" style="margin-top:8px">
+                <span>{o.get('amount',0)} units @ {o.get('buy_price',0):.1f}</span>
+                <span>{age_min} min ago</span>
             </div>
             <div style="margin-top:8px">
                 <a href="/api/cancel/{iid}" style="font-size:0.7rem;color:#f43f5e;text-decoration:none">⊗ Cancel in-game</a>

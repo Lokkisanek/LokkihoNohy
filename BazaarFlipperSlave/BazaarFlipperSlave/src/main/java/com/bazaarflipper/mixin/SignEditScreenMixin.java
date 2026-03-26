@@ -1,8 +1,8 @@
 package com.bazaarflipper.mixin;
 
 import com.bazaarflipper.BazaarFlipperMod;
-import com.bazaarflipper.TaskExecutor;
-import com.bazaarflipper.model.Task;
+import com.bazaarflipper.flip.FlipEngine;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.ingame.SignEditScreen;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
@@ -11,90 +11,48 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/**
- * Intercepts the Sign GUI that Hypixel uses for custom amount / price entry.
- *
- * When the {@link TaskExecutor} is in WAIT_SIGN_INPUT phase, this mixin
- * detects the sign opening, injects the desired value as the first line,
- * and calls {@link ClientPlayNetworkHandler} to finalize the packet —
- * exactly as if the player had typed it.
- *
- * The mixin is injected at the point where SignEditScreen calls finalize
- * (i.e., the player presses Done / Enter on the sign editor).
- */
 @Mixin(SignEditScreen.class)
 public abstract class SignEditScreenMixin {
 
-    /**
-     * Called when the sign editor is first opened (after_init equivalent).
-     * We schedule the auto-input on the next tick so the screen is fully ready.
-     */
     @Inject(method = "init", at = @At("TAIL"))
     private void onInit(CallbackInfo ci) {
-        Task task = BazaarFlipperMod.getTaskManager().getCurrentTask();
-        if (task == null || task.isIdle()) return;
+        FlipEngine engine = BazaarFlipperMod.getEngine();
+        if (engine == null) return;
 
-        TaskExecutor executor = BazaarFlipperMod.getTaskExecutor();
-        if (executor.isWaitingForSignInput()) {
-            // Determine what value to inject based on task context
-            // Hypixel sign: line 0 = value, lines 1-3 = empty
-            String value = resolveSignValue(task);
-            scheduleSignInput((SignEditScreen) (Object) this, value, executor);
-        }
-    }
+        String value = engine.getPendingSignValue();
+        if (value == null || value.isEmpty()) return;
 
-    /**
-     * Decides what text to type on the sign — either the amount or the price,
-     * depending on the screen title context.
-     */
-    private String resolveSignValue(Task task) {
-        String title = BazaarFlipperMod.getScreenTracker().getRawTitle();
-        if (title.toLowerCase().contains("price") || title.toLowerCase().contains("custom")) {
-            // Format price as an integer (Hypixel drops decimals on sign input)
-            return String.valueOf((long) task.price);
-        }
-        return String.valueOf(task.amount);
-    }
+        SignEditScreen self = (SignEditScreen) (Object) this;
+        MinecraftClient mc = MinecraftClient.getInstance();
 
-    /**
-     * Schedules sign input on the next client tick to avoid race conditions
-     * with the packet handler.
-     */
-    private void scheduleSignInput(SignEditScreen screen, String value, TaskExecutor executor) {
-        net.minecraft.client.MinecraftClient mc = net.minecraft.client.MinecraftClient.getInstance();
+        // Schedule on next tick to let the screen finish initializing
         mc.execute(() -> {
             try {
-                // Use reflection to access the private 'blockEntity' field
-                // (Yarn-mapped: field_2392 / blockEntity depending on version)
+                // Access the sign block entity via reflection
                 var field = SignEditScreen.class.getDeclaredField("blockEntity");
                 field.setAccessible(true);
-                var blockEntity = (net.minecraft.block.entity.SignBlockEntity) field.get(screen);
+                var blockEntity = (net.minecraft.block.entity.SignBlockEntity) field.get(self);
 
-                // Set line 0 of the front text
-                blockEntity.getFrontText().getMessages(false); // ensure initialized
-                // Directly set via setText packet equivalent
-                String[] lines = {"", "", "", ""};
-                lines[0] = value;
+                if (blockEntity == null) return;
 
-                // Send the UpdateSign packet to the server
+                // Send the sign update packet
                 ClientPlayNetworkHandler handler = mc.getNetworkHandler();
-                if (handler != null && blockEntity != null) {
+                if (handler != null) {
                     handler.sendPacket(new UpdateSignC2SPacket(
                             blockEntity.getPos(),
-                            true,       // isFront
-                            lines[0], lines[1], lines[2], lines[3]
+                            true,
+                            value, "", "", ""
                     ));
                 }
 
                 // Close the sign screen
                 mc.setScreen(null);
 
-                // Notify the executor that sign input is done
-                executor.signInputComplete();
+                // Notify engine that sign input is complete
+                engine.onSignCompleted();
 
             } catch (Exception e) {
-                BazaarFlipperMod.LOGGER.error("[BazaarFlipper] Sign input mixin failed: {}",
-                        e.getMessage());
+                BazaarFlipperMod.LOGGER.error("[BazaarFlipper] Sign input failed: {}", e.getMessage());
             }
         });
     }

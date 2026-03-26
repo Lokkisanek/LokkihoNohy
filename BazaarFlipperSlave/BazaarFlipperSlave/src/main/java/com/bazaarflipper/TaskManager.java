@@ -26,11 +26,9 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Manages all HTTP communication with the Python master server.
  *
- * - Polls  GET  http://localhost:8000/api/task    every 1–2 seconds
- * - Posts  POST http://localhost:8000/api/status  every ~5 seconds
- *
- * Uses java.net.http.HttpClient (async, non-blocking).
- * JSON is handled by the Gson library bundled with Minecraft.
+ * FIX 2.2 — markTaskConsumed() now POSTs to /api/task/done
+ * FIX 2.3 — sendStatus() sends GuiType.name().toLowerCase() instead of raw title
+ * FIX 3.2 — readPlayerCoins() strips §-color codes and comma separators
  */
 public class TaskManager {
 
@@ -39,12 +37,11 @@ public class TaskManager {
     private static final String BASE_URL   = "http://localhost:8000";
     private static final String TASK_URL   = BASE_URL + "/api/task";
     private static final String STATUS_URL = BASE_URL + "/api/status";
+    private static final String DONE_URL   = BASE_URL + "/api/task/done";
+    private static final String FAILED_URL = BASE_URL + "/api/task/failed";
 
-    /** Polling cadence: 1 000–2 000 ms, randomly chosen each cycle. */
-    private static final int POLL_MIN_MS = 1000;
-    private static final int POLL_MAX_MS = 2000;
-
-    /** Status update cadence: every 5 000 ms. */
+    private static final int POLL_MIN_MS       = 1000;
+    private static final int POLL_MAX_MS       = 2000;
     private static final int STATUS_INTERVAL_MS = 5000;
 
     private final HttpClient http;
@@ -56,14 +53,10 @@ public class TaskManager {
                 return t;
             });
 
-    /** Latest task received from the master. Never null — defaults to IDLE. */
     private final AtomicReference<Task> currentTask = new AtomicReference<>(idleTask());
-
-    /** Prevents concurrent in-flight requests from piling up. */
     private final AtomicBoolean taskRequestInFlight   = new AtomicBoolean(false);
     private final AtomicBoolean statusRequestInFlight = new AtomicBoolean(false);
 
-    /** Whether a task has been consumed (executor sets this after finishing). */
     private volatile boolean taskConsumed = false;
 
     public TaskManager() {
@@ -80,7 +73,7 @@ public class TaskManager {
         scheduleNextPoll();
         scheduler.scheduleAtFixedRate(this::sendStatus, 2000, STATUS_INTERVAL_MS,
                 TimeUnit.MILLISECONDS);
-        LOGGER.info("[BazaarFlipper] TaskManager started.");
+        LOGGER.info("[BazaarFlipper] TaskManager started — polling {}", TASK_URL);
     }
 
     public void shutdown() {
@@ -127,18 +120,17 @@ public class TaskManager {
             JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
 
             Task task = new Task();
-            task.action     = getStr(obj, "action", "IDLE");
-            task.item_id    = getStr(obj, "item_id", "");
-            task.amount     = obj.has("amount")  ? obj.get("amount").getAsInt()    : 0;
-            task.price      = obj.has("price")   ? obj.get("price").getAsDouble()  : 0.0;
+            task.action      = getStr(obj, "action", "IDLE");
+            task.item_id     = getStr(obj, "item_id", "");
+            task.amount      = obj.has("amount")      ? obj.get("amount").getAsInt()      : 0;
+            task.price       = obj.has("price")       ? obj.get("price").getAsDouble()    : 0.0;
             task.slot_target = obj.has("slot_target") ? obj.get("slot_target").getAsInt() : -1;
 
-            // Only replace the current task if it's IDLE or been consumed
             if (currentTask.get().isIdle() || taskConsumed) {
                 taskConsumed = false;
                 currentTask.set(task);
                 if (!task.isIdle()) {
-                    LOGGER.info("[BazaarFlipper] New task received: {}", task);
+                    LOGGER.info("[BazaarFlipper] New task: {}", task);
                 }
             }
         } catch (Exception e) {
@@ -159,17 +151,16 @@ public class TaskManager {
             return;
         }
 
-        // Collect inventory item IDs on the game thread via submit
-        // (HttpClient callback runs off the game thread, so we gather data here
-        // inside the scheduler thread — for Hypixel, packets are received on
-        // the netty thread and stored in the player object, safe to read)
-        String guiTitle = BazaarFlipperMod.getScreenTracker().getRawTitle();
-        if (guiTitle.isEmpty()) guiTitle = "none";
+        // FIX 2.3 — report GuiType enum name (e.g. "bazaar_main") not raw title
+        String guiType = BazaarFlipperMod.getScreenTracker()
+                .getCurrentGuiType()
+                .name()
+                .toLowerCase();   // e.g. "bazaar_main", "bazaar_orders", "none"
 
-        double coins = readPlayerCoins(mc);
+        double coins       = readPlayerCoins(mc);
         List<String> items = collectInventoryIds(mc);
 
-        StatusPayload payload = new StatusPayload(guiTitle, coins, items);
+        StatusPayload payload = new StatusPayload(guiType, coins, items);
         String body = gson.toJson(payload);
 
         HttpRequest request = HttpRequest.newBuilder()
@@ -183,30 +174,44 @@ public class TaskManager {
                 .thenRun(() -> statusRequestInFlight.set(false))
                 .exceptionally(ex -> {
                     statusRequestInFlight.set(false);
-                    LOGGER.warn("[BazaarFlipper] Status post failed: {}", ex.getMessage());
+                    LOGGER.warn("[BazaarFlipper] Status POST failed: {}", ex.getMessage());
                     return null;
                 });
     }
 
+    // -----------------------------------------------------------------------
+    //  Coin parsing (FIX 3.2)
+    // -----------------------------------------------------------------------
+
     /**
-     * Reads the player's coin balance.
-     * Hypixel stores purse balance on the scoreboard sidebar.
-     * For simplicity we parse the scoreboard; falls back to 0 on failure.
+     * Reads the player's purse balance from the Hypixel SkyBlock sidebar scoreboard.
+     *
+     * Hypixel format examples:
+     *   "§6Purse: §a1,234,567"
+     *   "§6Purse: §a12.3M"
+     *   "Coins: 1,234,567"
+     *
+     * FIX 3.2: strip §-color codes, strip commas, handle both "Purse" and "Coins" labels.
      */
     private double readPlayerCoins(MinecraftClient mc) {
-        // Coin balance is parsed from the scoreboard sidebar display strings.
-        // We iterate over the rendered score lines using the display objective.
         try {
             var scoreboard = mc.world.getScoreboard();
-            var objective = scoreboard.getObjectiveForSlot(
+            var objective  = scoreboard.getObjectiveForSlot(
                     net.minecraft.scoreboard.ScoreboardDisplaySlot.SIDEBAR);
             if (objective == null) return 0;
 
-            for (var scoreEntry : scoreboard.getScoreboardEntries(objective)) {
-                String name = scoreEntry.owner();
-                if (name.contains("Purse") || name.contains("purse")) {
-                    String digits = name.replaceAll("[^0-9.]", "");
-                    if (!digits.isEmpty()) return Double.parseDouble(digits);
+            for (var entry : scoreboard.getScoreboardEntries(objective)) {
+                // Strip §-color/formatting codes
+                String name = entry.owner().replaceAll("§[0-9a-fk-or]", "").trim();
+
+                if (name.contains("Purse") || name.contains("Coins")) {
+                    // Remove everything that is not a digit, dot, or comma
+                    String cleaned = name.replaceAll("[^0-9.,]", "");
+                    // Remove comma thousand-separators
+                    cleaned = cleaned.replace(",", "");
+                    if (!cleaned.isEmpty()) {
+                        return Double.parseDouble(cleaned);
+                    }
                 }
             }
         } catch (Exception ignored) {}
@@ -233,19 +238,51 @@ public class TaskManager {
         return currentTask.get();
     }
 
-    /** Call this when the executor has finished processing a task. */
+    /**
+     * FIX 2.2 — also POSTs to /api/task/done so the server can advance its
+     * task queue and trigger the auto-SELL logic.
+     */
     public void markTaskConsumed() {
         taskConsumed = true;
         currentTask.set(idleTask());
-        LOGGER.info("[BazaarFlipper] Task marked consumed, waiting for next.");
+        LOGGER.info("[BazaarFlipper] Task consumed, notifying server.");
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(DONE_URL))
+                .timeout(Duration.ofSeconds(3))
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+        http.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+                .exceptionally(ex -> {
+                    LOGGER.warn("[BazaarFlipper] /api/task/done POST failed: {}", ex.getMessage());
+                    return null;
+                });
     }
 
-    /** Call this to report a task execution failure back to the master. */
+    /**
+     * FIX 2.2 — also POSTs to /api/task/failed so the server can log the
+     * failure and reset its current task.
+     */
     public void markTaskFailed(String reason) {
         LOGGER.warn("[BazaarFlipper] Task failed: {}", reason);
         taskConsumed = true;
         currentTask.set(idleTask());
-        // Optionally POST the reason to /api/status as an error field
+
+        String body = "{\"reason\":\"" + reason.replace("\"", "'") + "\"}";
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(FAILED_URL))
+                .timeout(Duration.ofSeconds(3))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+        http.sendAsync(request, HttpResponse.BodyHandlers.discarding())
+                .exceptionally(ex -> {
+                    LOGGER.warn("[BazaarFlipper] /api/task/failed POST failed: {}", ex.getMessage());
+                    return null;
+                });
     }
 
     // -----------------------------------------------------------------------

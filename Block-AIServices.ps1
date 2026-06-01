@@ -38,7 +38,7 @@ function ConvertTo-FileUri {
 }
 
 function ConvertTo-DomainCandidate {
-    param([Parameter(Mandatory)][string]$Text)
+    param([AllowEmptyString()][string]$Text)
 
     $candidate = $Text.Trim().ToLowerInvariant()
     if (-not $candidate) { return $null }
@@ -59,7 +59,7 @@ function ConvertTo-DomainCandidate {
 }
 
 function Get-DomainsFromRule {
-    param([Parameter(Mandatory)][string]$Rule)
+    param([AllowEmptyString()][string]$Rule)
 
     $line = $Rule.Trim().ToLowerInvariant()
     if (-not $line) { return @() }
@@ -107,6 +107,10 @@ function Get-BlockDomains {
 
     $domains = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($line in ($rawText -split "\r?\n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
         foreach ($domain in (Get-DomainsFromRule -Rule $line)) {
             if ($domain) {
                 [void]$domains.Add($domain)

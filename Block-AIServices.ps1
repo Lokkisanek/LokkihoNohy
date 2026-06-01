@@ -17,7 +17,8 @@ param(
     [string]$BlocklistUrl = "https://raw.githubusercontent.com/laylavish/uBlockOrigin-HUGE-AI-Blocklist/main/list.txt",
     [string]$InstallDir = "$env:ProgramData\AIServiceBlocker",
     [switch]$SkipHosts,
-    [switch]$SkipFirefox
+    [switch]$SkipFirefox,
+    [switch]$KeepBrowsersOpen
 )
 
 $ErrorActionPreference = "Stop"
@@ -331,6 +332,15 @@ function Set-PolicyRegistryList {
     )
 
     New-Item -Path $Path -Force | Out-Null
+
+    if (Test-Path -Path $Path) {
+        $existingNames = @((Get-Item -Path $Path).GetValueNames())
+        foreach ($existingName in $existingNames) {
+            Backup-RegistryValue -State $State -Path $Path -Name $existingName
+            Remove-ItemProperty -Path $Path -Name $existingName -ErrorAction SilentlyContinue
+        }
+    }
+
     for ($i = 0; $i -lt $Values.Count; $i++) {
         $name = [string]($i + 1)
         Set-PolicyRegistryValue -State $State -Path $Path -Name $name -Value $Values[$i] -Type "String"
@@ -355,11 +365,21 @@ function Get-GoogleSearchPolicyPatterns {
         "www.google.co.uk"
     )
 
-    if ($Mode -eq "Allow") {
-        return @($hosts | ForEach-Object { "$PSItem/search@udm=14" })
+    $schemes = @("https://", "http://", "")
+    $patterns = New-Object 'System.Collections.Generic.List[string]'
+
+    foreach ($host in $hosts) {
+        foreach ($scheme in $schemes) {
+            if ($Mode -eq "Allow") {
+                $patterns.Add("$scheme$host/search@udm=14") | Out-Null
+            } else {
+                $patterns.Add("$scheme$host/search") | Out-Null
+                $patterns.Add("$scheme$host/search@q=*") | Out-Null
+            }
+        }
     }
 
-    return @($hosts | ForEach-Object { "$PSItem/search" })
+    return $patterns.ToArray()
 }
 
 function Set-BrowserPolicies {
@@ -371,7 +391,9 @@ function Set-BrowserPolicies {
     Write-Host "3. Vynucuji Chrome/Edge policy a vypinam DoH..." -ForegroundColor Cyan
     $browserPolicyPaths = @(
         "HKLM:\SOFTWARE\Policies\Google\Chrome",
-        "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+        "HKCU:\SOFTWARE\Policies\Google\Chrome",
+        "HKLM:\SOFTWARE\Policies\Microsoft\Edge",
+        "HKCU:\SOFTWARE\Policies\Microsoft\Edge"
     )
 
     foreach ($path in $browserPolicyPaths) {
@@ -384,8 +406,15 @@ function Set-BrowserPolicies {
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderName" -Value "Google Web" -Type "String"
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderKeyword" -Value "google-web" -Type "String"
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderSearchURL" -Value "https://www.google.com/search?q={searchTerms}&udm=14" -Type "String"
-        Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath "URLBlocklist") -Values (Get-GoogleSearchPolicyPatterns -Mode "Block")
-        Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath "URLAllowlist") -Values (Get-GoogleSearchPolicyPatterns -Mode "Allow")
+
+        $googleSearchBlockPatterns = Get-GoogleSearchPolicyPatterns -Mode "Block"
+        $googleSearchAllowPatterns = Get-GoogleSearchPolicyPatterns -Mode "Allow"
+        foreach ($blocklistPolicyName in @("URLBlocklist", "URLBlacklist")) {
+            Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath $blocklistPolicyName) -Values $googleSearchBlockPatterns
+        }
+        foreach ($allowlistPolicyName in @("URLAllowlist", "URLWhitelist")) {
+            Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath $allowlistPolicyName) -Values $googleSearchAllowPatterns
+        }
     }
 }
 
@@ -534,6 +563,18 @@ function Set-FirefoxPolicyFile {
     }
 }
 
+function Stop-BrowserProcessesForPolicyReload {
+    if ($KeepBrowsersOpen) {
+        Write-Host "8. Prohlizece nechavam bezet podle parametru -KeepBrowsersOpen." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "8. Zaviram Chrome/Edge, aby nacetly nove enterprise policies..." -ForegroundColor Cyan
+    foreach ($processName in @("chrome", "msedge")) {
+        Get-Process -Name $processName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-CacheRefresh {
     Write-Host "7. Obnovuji DNS/proxy cache..." -ForegroundColor Cyan
     try { & ipconfig /flushdns | Out-Null } catch { Write-Verbose $_.Exception.Message }
@@ -567,7 +608,8 @@ $state | Add-Member -NotePropertyName "UpdatedAt" -NotePropertyValue ([DateTimeO
 ConvertTo-JsonFile -InputObject $state -Path $statePath
 
 Invoke-CacheRefresh
+Stop-BrowserProcessesForPolicyReload
 
 Write-Host ""
 Write-Host "Hotovo. Blokace je aplikovana pro Chrome/Edge pres vynuceny PAC, DoH je vypnute policy a hosts obsahuje presne domeny." -ForegroundColor Green
-Write-Host "Zavrete a znovu spustte prohlizece, aby nacetly nove enterprise policies." -ForegroundColor Yellow
+Write-Host "Znovu otevri prohlizec a zkontroluj chrome://policy nebo edge://policy." -ForegroundColor Yellow

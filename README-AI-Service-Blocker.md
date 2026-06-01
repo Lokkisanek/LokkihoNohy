@@ -36,7 +36,8 @@ resolution.
    - `domains.txt`
    - `ai-blocker.pac`
    - `state.json`
-4. Sets Chrome and Edge machine policies under `HKLM:\SOFTWARE\Policies`:
+4. Sets Chrome and Edge machine policies under `HKLM:\SOFTWARE\Policies` and
+   `HKCU:\SOFTWARE\Policies`:
    - `DnsOverHttpsMode = off`
    - `BuiltInDnsClientEnabled = 0`
    - `ProxyMode = pac_script`
@@ -44,10 +45,10 @@ resolution.
    - `PacHttpsUrlStrippingEnabled = 0`
    - default search provider URL =
      `https://www.google.com/search?q={searchTerms}&udm=14`
-   - `URLBlocklist` entries for Google Search (`google.*/search` on common
-     Google hosts)
-   - `URLAllowlist` exceptions for the same Google Search URLs only when the
-     query contains `udm=14`
+   - `URLBlocklist` / legacy `URLBlacklist` entries for Google Search on common
+     Google hosts, including query-token blocks such as `/search@q=*`
+   - `URLAllowlist` / legacy `URLWhitelist` exceptions for the same Google
+     Search URLs only when the query contains `udm=14`
 5. Blocks normal Google Search result URLs without `udm=14`. This targets
    Google AI Overview / AI Mode, which is served from `google.com` rather than a
    separate AI domain. The browser URL policies are the primary enforcement; the
@@ -58,6 +59,8 @@ resolution.
    block.
 8. If Firefox is installed in Program Files, writes/merges enterprise
    `policies.json` to disable DoH and force the same PAC file.
+9. Closes running Chrome and Edge processes by default so the browsers cannot
+   keep using stale policies. Pass `-KeepBrowsersOpen` to skip this.
 
 The script stores previous registry values and Firefox policy file contents in
 `state.json`, so `Unblock-AIServices.ps1` can restore them instead of blindly
@@ -70,8 +73,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\Block-AIServices.ps1
 ```
 
-Then close and reopen Chrome, Edge, and Firefox so they reload enterprise
-policies.
+The script closes Chrome and Edge by default so they reload enterprise policies
+on the next start. Firefox should also be closed and reopened.
 
 To remove the block:
 
@@ -88,7 +91,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - Google AI Overview is not blockable by domain without blocking Google Search,
   because it is delivered from `google.com`. The script therefore forces Google
   Web search (`udm=14`) and blocks regular Google Search result URLs through
-  Chrome/Edge `URLBlocklist`, with `URLAllowlist` exceptions for `udm=14`.
+  Chrome/Edge `URLBlocklist` / `URLBlacklist`, with allowlist exceptions for
+  `udm=14`.
 - Apps that ignore browser/system proxy settings may still need separate
   firewall, DNS, or application-control rules.
 - If another administrator already manages browser proxy or default-search

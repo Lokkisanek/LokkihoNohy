@@ -41,10 +41,16 @@ resolution.
    - `BuiltInDnsClientEnabled = 0`
    - `ProxyMode = pac_script`
    - `ProxyPacUrl = file:///C:/ProgramData/AIServiceBlocker/ai-blocker.pac`
-5. Best-effort disables Windows DoH policy/settings.
-6. Adds exact-domain entries to the Windows `hosts` file inside a managed marker
+   - `PacHttpsUrlStrippingEnabled = 0`
+   - default search provider URL =
+     `https://www.google.com/search?q={searchTerms}&udm=14`
+5. Blocks normal Google Search result URLs without `udm=14` in the PAC file.
+   This targets Google AI Overview / AI Mode, which is served from `google.com`
+   rather than a separate AI domain.
+6. Best-effort disables Windows DoH policy/settings.
+7. Adds exact-domain entries to the Windows `hosts` file inside a managed marker
    block.
-7. If Firefox is installed in Program Files, writes/merges enterprise
+8. If Firefox is installed in Program Files, writes/merges enterprise
    `policies.json` to disable DoH and force the same PAC file.
 
 The script stores previous registry values and Firefox policy file contents in
@@ -73,7 +79,12 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 - This is endpoint hardening, not a substitute for a network firewall or DNS
   resolver controlled by the school.
 - Chrome and Edge can be governed reliably through machine policies on local PCs.
+- Google AI Overview is not blockable by domain without blocking Google Search,
+  because it is delivered from `google.com`. The script therefore forces Google
+  Web search (`udm=14`) and blocks regular Google Search result URLs when the
+  browser exposes the full HTTPS URL to the PAC file.
 - Apps that ignore browser/system proxy settings may still need separate
   firewall, DNS, or application-control rules.
-- If another administrator already manages browser proxy policies, review the
-  change before deployment because this script intentionally forces a PAC file.
+- If another administrator already manages browser proxy or default-search
+  policies, review the change before deployment because this script intentionally
+  forces both.

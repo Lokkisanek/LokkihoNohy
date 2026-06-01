@@ -164,14 +164,23 @@ var AI_BLOCKED_DOMAINS = {
 $($domainLines -join ",`r`n")
 };
 
-function isBlockedAiDomain(host) {
+function normalizeHost(host) {
   if (!host) {
-    return false;
+    return "";
   }
 
   host = host.toLowerCase();
   if (host.charAt(host.length - 1) === ".") {
     host = host.substring(0, host.length - 1);
+  }
+
+  return host;
+}
+
+function isBlockedAiDomain(host) {
+  host = normalizeHost(host);
+  if (!host) {
+    return false;
   }
 
   if (AI_BLOCKED_DOMAINS[host]) {
@@ -189,6 +198,25 @@ function isBlockedAiDomain(host) {
   return false;
 }
 
+function isGoogleSearchHost(host) {
+  host = normalizeHost(host);
+  return host === "google.com" || host === "www.google.com" ||
+         shExpMatch(host, "google.*") || shExpMatch(host, "www.google.*");
+}
+
+function isGoogleSearchWithoutWebMode(url, host) {
+  if (!url || !isGoogleSearchHost(host)) {
+    return false;
+  }
+
+  var normalizedUrl = url.toLowerCase();
+  if (normalizedUrl.indexOf("/search?") === -1 && normalizedUrl.indexOf("/search#") === -1) {
+    return false;
+  }
+
+  return normalizedUrl.indexOf("udm=14") === -1 && normalizedUrl.indexOf("udm%3d14") === -1;
+}
+
 function FindProxyForURL(url, host) {
   if (isPlainHostName(host) || isInNet(host, "10.0.0.0", "255.0.0.0") ||
       isInNet(host, "172.16.0.0", "255.240.0.0") ||
@@ -197,7 +225,7 @@ function FindProxyForURL(url, host) {
     return "DIRECT";
   }
 
-  if (isBlockedAiDomain(host)) {
+  if (isGoogleSearchWithoutWebMode(url, host) || isBlockedAiDomain(host)) {
     return "PROXY 127.0.0.1:9";
   }
 
@@ -312,6 +340,11 @@ function Set-BrowserPolicies {
         Set-PolicyRegistryValue -State $State -Path $path -Name "BuiltInDnsClientEnabled" -Value 0 -Type "DWord"
         Set-PolicyRegistryValue -State $State -Path $path -Name "ProxyMode" -Value "pac_script" -Type "String"
         Set-PolicyRegistryValue -State $State -Path $path -Name "ProxyPacUrl" -Value $PacUri -Type "String"
+        Set-PolicyRegistryValue -State $State -Path $path -Name "PacHttpsUrlStrippingEnabled" -Value 0 -Type "DWord"
+        Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderEnabled" -Value 1 -Type "DWord"
+        Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderName" -Value "Google Web" -Type "String"
+        Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderKeyword" -Value "google-web" -Type "String"
+        Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderSearchURL" -Value "https://www.google.com/search?q={searchTerms}&udm=14" -Type "String"
     }
 }
 

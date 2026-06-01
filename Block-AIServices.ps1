@@ -368,13 +368,13 @@ function Get-GoogleSearchPolicyPatterns {
     $schemes = @("https://", "http://", "")
     $patterns = New-Object 'System.Collections.Generic.List[string]'
 
-    foreach ($host in $hosts) {
+    foreach ($googleHost in $hosts) {
         foreach ($scheme in $schemes) {
             if ($Mode -eq "Allow") {
-                $patterns.Add("$scheme$host/search@udm=14") | Out-Null
+                $patterns.Add("$scheme$googleHost/search@udm=14") | Out-Null
             } else {
-                $patterns.Add("$scheme$host/search") | Out-Null
-                $patterns.Add("$scheme$host/search@q=*") | Out-Null
+                $patterns.Add("$scheme$googleHost/search") | Out-Null
+                $patterns.Add("$scheme$googleHost/search@q=*") | Out-Null
             }
         }
     }

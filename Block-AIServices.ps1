@@ -323,6 +323,45 @@ function Set-PolicyRegistryValue {
     New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
 }
 
+function Set-PolicyRegistryList {
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string[]]$Values
+    )
+
+    New-Item -Path $Path -Force | Out-Null
+    for ($i = 0; $i -lt $Values.Count; $i++) {
+        $name = [string]($i + 1)
+        Set-PolicyRegistryValue -State $State -Path $Path -Name $name -Value $Values[$i] -Type "String"
+    }
+}
+
+function Get-GoogleSearchPolicyPatterns {
+    param([Parameter(Mandatory)][ValidateSet("Block", "Allow")][string]$Mode)
+
+    $hosts = @(
+        "google.com",
+        "www.google.com",
+        "google.cz",
+        "www.google.cz",
+        "google.sk",
+        "www.google.sk",
+        "google.de",
+        "www.google.de",
+        "google.at",
+        "www.google.at",
+        "google.co.uk",
+        "www.google.co.uk"
+    )
+
+    if ($Mode -eq "Allow") {
+        return @($hosts | ForEach-Object { "$PSItem/search@udm=14" })
+    }
+
+    return @($hosts | ForEach-Object { "$PSItem/search" })
+}
+
 function Set-BrowserPolicies {
     param(
         [Parameter(Mandatory)]$State,
@@ -345,6 +384,8 @@ function Set-BrowserPolicies {
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderName" -Value "Google Web" -Type "String"
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderKeyword" -Value "google-web" -Type "String"
         Set-PolicyRegistryValue -State $State -Path $path -Name "DefaultSearchProviderSearchURL" -Value "https://www.google.com/search?q={searchTerms}&udm=14" -Type "String"
+        Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath "URLBlocklist") -Values (Get-GoogleSearchPolicyPatterns -Mode "Block")
+        Set-PolicyRegistryList -State $State -Path (Join-Path -Path $path -ChildPath "URLAllowlist") -Values (Get-GoogleSearchPolicyPatterns -Mode "Allow")
     }
 }
 

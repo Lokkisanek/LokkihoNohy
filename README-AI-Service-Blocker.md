@@ -46,7 +46,8 @@ resolution.
    - default search provider URL =
      `https://www.google.com/search?q={searchTerms}&udm=14`
    - `URLBlocklist` / legacy `URLBlacklist` entries for Google Search on common
-     Google hosts, including query-token blocks such as `/search@q=*`
+     Google hosts, including `/search` path-prefix blocks and query-token blocks
+     such as `/search?q=*`
    - `URLAllowlist` / legacy `URLWhitelist` exceptions for the same Google
      Search URLs only when the query contains `udm=14`
 5. Blocks normal Google Search result URLs without `udm=14`. This targets
@@ -76,6 +77,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 The script closes Chrome and Edge by default so they reload enterprise policies
 on the next start. Firefox should also be closed and reopened.
 
+If Google still renders AI Overview because Chrome reuses an already-loaded
+Google page dynamically, run the blocker with:
+
+```powershell
+.\Block-AIServices.ps1 -BlockGoogleSearchCompletely
+```
+
+That mode blocks configured Google Search hosts entirely instead of trying to
+allow `udm=14` Web mode.
+
 To remove the block:
 
 ```powershell
@@ -92,7 +103,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
   because it is delivered from `google.com`. The script therefore forces Google
   Web search (`udm=14`) and blocks regular Google Search result URLs through
   Chrome/Edge `URLBlocklist` / `URLBlacklist`, with allowlist exceptions for
-  `udm=14`.
+  `udm=14`. If this remains bypassable on a given Chrome build, use
+  `-BlockGoogleSearchCompletely`.
 - Apps that ignore browser/system proxy settings may still need separate
   firewall, DNS, or application-control rules.
 - If another administrator already manages browser proxy or default-search

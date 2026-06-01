@@ -18,7 +18,8 @@ param(
     [string]$InstallDir = "$env:ProgramData\AIServiceBlocker",
     [switch]$SkipHosts,
     [switch]$SkipFirefox,
-    [switch]$KeepBrowsersOpen
+    [switch]$KeepBrowsersOpen,
+    [switch]$BlockGoogleSearchCompletely
 )
 
 $ErrorActionPreference = "Stop"
@@ -328,7 +329,7 @@ function Set-PolicyRegistryList {
     param(
         [Parameter(Mandatory)]$State,
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][string[]]$Values
+        [AllowEmptyCollection()][string[]]$Values
     )
 
     New-Item -Path $Path -Force | Out-Null
@@ -369,12 +370,19 @@ function Get-GoogleSearchPolicyPatterns {
     $patterns = New-Object 'System.Collections.Generic.List[string]'
 
     foreach ($googleHost in $hosts) {
+        if ($Mode -eq "Block" -and $BlockGoogleSearchCompletely) {
+            $patterns.Add($googleHost) | Out-Null
+            continue
+        }
+
         foreach ($scheme in $schemes) {
             if ($Mode -eq "Allow") {
-                $patterns.Add("$scheme$googleHost/search@udm=14") | Out-Null
+                if (-not $BlockGoogleSearchCompletely) {
+                    $patterns.Add("$scheme$googleHost/search?udm=14") | Out-Null
+                }
             } else {
                 $patterns.Add("$scheme$googleHost/search") | Out-Null
-                $patterns.Add("$scheme$googleHost/search@q=*") | Out-Null
+                $patterns.Add("$scheme$googleHost/search?q=*") | Out-Null
             }
         }
     }
